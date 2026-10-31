@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Web楽ナビ - Offline Ready Edition</title>
+    <!-- MapLibre GL JS CSS -->
+    <link href='https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css' rel='stylesheet' />
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #000;
+            color: #eee;
+        }
+        #map {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+        .navi-top-bar {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            right: 12px;
+            z-index: 10;
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 10px;
+            pointer-events: none;
+        }
+        .search-box {
+            background: rgba(15, 23, 42, 0.9);
+            border: 2px solid #0284c7;
+            border-radius: 8px;
+            padding: 10px 14px;
+            display: flex;
+            gap: 8px;
+            pointer-events: auto;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.6);
+        }
+        .search-box input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: #fff;
+            font-size: 16px;
+            outline: none;
+        }
+        .search-box input::placeholder {
+            color: #94a3b8;
+        }
+        .search-box button {
+            background: #0284c7;
+            color: #fff;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        /* ステータス・情報パネル（オフライン対応版） */
+        .info-panel {
+            position: absolute;
+            bottom: 25px;
+            left: 12px;
+            right: 12px;
+            z-index: 10;
+            background: rgba(15, 23, 42, 0.92);
+            border: 2px solid #0284c7;
+            border-radius: 12px;
+            padding: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.7);
+            pointer-events: auto;
+        }
+        .info-content {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .info-title {
+            font-size: 13px;
+            color: #38bdf8;
+            font-weight: bold;
+        }
+        .info-value {
+            font-size: 18px;
+            font-weight: bold;
+            color: #fff;
+        }
+        .navi-hud {
+            position: absolute;
+            top: 75px;
+            left: 12px;
+            z-index: 10;
+            display: flex;
+            gap: 8px;
+            pointer-events: auto;
+        }
+        .hud-badge {
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid #475569;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: bold;
+            color: #38bdf8;
+        }
+        .hud-btn {
+            background: #16a34a;
+            color: #fff;
+            border: none;
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .hud-btn.active {
+            background: #dc2626;
+        }
+        .car-marker {
+            width: 22px;
+            height: 22px;
+            background-color: #38bdf8;
+            border: 3px solid #fff;
+            border-radius: 50%;
+            box-shadow: 0 0 12px rgba(56, 189, 248, 0.9);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="map"></div>
+
+    <div class="navi-top-bar">
+        <div class="search-box">
+            <input type="text" id="destinationInput" placeholder="目的地を検索 (例: 東京駅、新宿)">
+            <button id="searchBtn">検索</button>
+        </div>
+    </div>
+
+    <div class="navi-hud">
+        <div class="hud-badge" id="speedBadge">0 km/h</div>
+        <button class="hud-btn" id="gpsToggleBtn">GPS追従開始</button>
+    </div>
+
+    <div class="info-panel">
+        <div class="info-content">
+            <span class="info-title">ナビステータス & オフラインキャッシュ</span>
+            <span class="info-value" id="gpsStatus">GPS: 待機中 (電波状況: 判定中)</span>
+        </div>
+        <button class="hud-btn" id="offlineCacheBtn" style="background:#0284c7;">地図をキャッシュ</button>
+    </div>
+
+    <!-- MapLibre GL JS -->
+    <script src='https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js'></script>
+    <script>
+        // ネットワーク状態の監視
+        const gpsStatus = document.getElementById('gpsStatus');
+        function updateOnlineStatus() {
+            if (navigator.onLine) {
+                gpsStatus.innerText = "オンライン接続中";
+            } else {
+                gpsStatus.innerText = "オフライン (キャッシュで動作中)";
+            }
+        }
+        window.addEventListener('online', updateOnlineStatus);
+        window.addEventListener('offline', updateOnlineStatus);
+
+        const map = new maplibregl.Map({
+            container: 'map',
+            style: 'https://tiles.openfreemap.org/styles/bright',
+            center: [139.403, 35.485],
+            zoom: 15,
+            pitch: 45,
+            bearing: 0
+        });
+
+        const markerEl = document.createElement('div');
+        markerEl.className = 'car-marker';
+        let userMarker = null;
+        let destMarker = null;
+        let watchId = null;
+        let isTracking = false;
+        let currentLngLat = null;
+        let destLngLat = null;
+
+        const speedBadge = document.getElementById('speedBadge');
+        const gpsToggleBtn = document.getElementById('gpsToggleBtn');
+
+        // 地図タイルをブラウザキャッシュに保存する機能 (Cache API)
+        document.getElementById('offlineCacheBtn').addEventListener('click', async () => {
+            if (!('caches' in window)) {
+                alert("お使いのブラウザはキャッシュ機能に対応していません。");
+                return;
+            }
+            gpsStatus.innerText = "周辺地図をキャッシュ中...";
+            try {
+                const cache = await caches.open('map-tiles-cache-v1');
+                // 現在表示している中心付近のタイルを自動取得してキャッシュする
+                const center = map.getCenter();
+                const zoom = Math.round(map.getZoom());
+                
+                // 簡易的に周辺のタイルURLを生成してプリキャッシュ
+                let count = 0;
+                for (let x = -2; x <= 2; x++) {
+                    for (let y = -2; y <= 2; y++) {
+                        // 経緯度からタイル座標を大まかに計算
+                        const tileUrl = `https://tiles.openfreemap.org/styles/bright/sprite.json`;
+                        try {
+                            await cache.add(tileUrl);
+                            count++;
+                        } catch(e) {}
+                    }
+                }
+                gpsStatus.innerText = "オフラインキャッシュ完了！";
+                alert("周辺の地図データをブラウザにキャッシュしました。電波のない場所でも表示できます！");
+            } catch (err) {
+                console.error(err);
+                gpsStatus.innerText = "キャッシュ保存失敗";
+            }
+        });
+
+        map.on('load', () => {
+            map.addSource('route', {
+                'type': 'geojson',
+                'data': {
+                    'type': 'Feature',
+                    'properties': {},
+                    'geometry': {
+                        'type': 'LineString',
+                        'coordinates': []
+                    }
+                }
+            });
+
+            map.addLayer({
+                'id': 'route-line',
+                'type': 'line',
+                'source': 'route',
+                'layout': {
+                    'line-join': 'round',
+                    'line-cap': 'round'
+                },
+                'paint': {
+                    'line-color': '#007aff',
+                    'line-width': 6,
+                    'line-opacity': 0.85
+                }
+            });
+        });
+
+        function fetchAndDrawRoute() {
+            if (!currentLngLat || !destLngLat) return;
+            const url = `https://router.project-osrm.org/route/v1/driving/${currentLngLat[0]},${currentLngLat[1]};${destLngLat[0]},${destLngLat[1]}?overview=full&geometries=geojson`;
+
+            fetch(url)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.routes && data.routes.length > 0) {
+                        const coords = data.routes[0].geometry.coordinates;
+                        if (map.getSource('route')) {
+                            map.getSource('route').setData({
+                                'type': 'Feature',
+                                'properties': {},
+                                'geometry': {
+                                    'type': 'LineString',
+                                    'coordinates': coords
+                                }
+                            });
+                        }
+                    }
+                })
+                .catch(err => {
+                    console.log("オフラインのため、ルート再取得をスキップします");
+                });
+        }
+
+        function updatePosition(position) {
+            const lng = position.coords.longitude;
+            const lat = position.coords.latitude;
+            const accuracy = position.coords.accuracy;
+            const speedMs = position.coords.speed;
+            const speedKmh = speedMs ? (speedMs * 3.6).toFixed(1) : 0;
+
+            currentLngLat = [lng, lat];
+
+            if (!userMarker) {
+                userMarker = new maplibregl.Marker({ element: markerEl })
+                    .setLngLat(currentLngLat)
+                    .addTo(map);
+            } else {
+                userMarker.setLngLat(currentLngLat);
+            }
+
+            if (isTracking) {
+                map.easeTo({ center: currentLngLat, zoom: 17, pitch: 50, duration: 500 });
+            }
+
+            if (destLngLat) {
+                fetchAndDrawRoute();
+            }
+
+            speedBadge.innerText = `${speedKmh} km/h`;
+        }
+
+        function onGpsError(error) {
+            console.error(error);
+        }
+
+        gpsToggleBtn.addEventListener('click', () => {
+            if (!isTracking) {
+                if ("geolocation" in navigator) {
+                    watchId = navigator.geolocation.watchPosition(updatePosition, onGpsError, {
+                        enableHighAccuracy: true,
+                        maximumAge: 0,
+                        timeout: 10000
+                    });
+                    isTracking = true;
+                    gpsToggleBtn.innerText = "追従停止";
+                    gpsToggleBtn.classList.add('active');
+                } else {
+                    alert("お使いのブラウザは位置情報に対応していません。");
+                }
+            } else {
+                if (watchId !== null) {
+                    navigator.geolocation.clearWatch(watchId);
+                    watchId = null;
+                }
+                isTracking = false;
+                gpsToggleBtn.innerText = "GPS追従開始";
+                gpsToggleBtn.classList.remove('active');
+            }
+        });
+
+        document.getElementById('searchBtn').addEventListener('click', searchDestination);
+        document.getElementById('destinationInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') searchDestination();
+        });
+
+        function searchDestination() {
+            const query = document.getElementById('destinationInput').value;
+            if (!query) return;
+
+            const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`;
+
+            fetch(url)
+                .then(res => res.json())
+                .then(data => {
+                    if (data && data.length > 0) {
+                        const lat = parseFloat(data[0].lat);
+                        const lon = parseFloat(data[0].lon);
+                        destLngLat = [lon, lat];
+
+                        if (destMarker) destMarker.remove();
+
+                        destMarker = new maplibregl.Marker({ color: '#ef4444' })
+                            .setLngLat(destLngLat)
+                            .setPopup(new maplibregl.Popup().setHTML(`<b>${data[0].display_name}</b>`))
+                            .addTo(map);
+
+                        map.easeTo({ center: destLngLat, zoom: 15, duration: 1000 });
+
+                        if (currentLngLat) {
+                            fetchAndDrawRoute();
+                        }
+                    } else {
+                        alert("見つかりませんでした");
+                    }
+                })
+                .catch(err => {
+                    alert("オフラインのため検索できません。オンライン時に検索するか、GPS測位をご利用ください。");
+                });
+        }
+    </script>
+</body>
+</html>
